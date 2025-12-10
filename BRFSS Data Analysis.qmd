@@ -1,0 +1,393 @@
+## Title: Mental Health, Alcohol Use, and Income: An Analysis of U.S. Adults (BRFSS 2021)
+
+## Overview
+
+This project uses data from the CDC’s 2021 Behavioral Risk Factor Surveillance System (BRFSS) to explore how alcohol consumption and household income relate to the number of days of poor mental health reported by U.S. adults. I recode survey variables into interpretable measures (e.g., days of bad mental health per month, days with alcohol consumption, income brackets), perform exploratory data analysis, and fit multiple linear regression models. I find that both higher drinking frequency and lower income are associated with more days of poor mental health, with income showing the stronger relationship.
+
+## Key Findings
+
+-   **Income and mental health**: Higher household income is strongly associated with fewer days of poor mental health. The relationship is monotonic across income bands.
+-   **Alcohol and mental health overall**: Alcohol consumption shows a weak relationship with mental health when considered alone, and the direction changes after controlling for income.
+-   **Low-income subgroup**: Among respondents with household incomes below \$35,000, more drinking days are associated with slightly *worse* mental health, and this relationship is statistically significant.
+-   **Sex differences**: Women report more days of poor mental health than men on average, and sex remains a significant predictor in multivariate models.
+-   **Best-performing model**: A regression including income, alcohol days, and sex provides the best fit (lower AIC, higher adjusted R²), suggesting all three variables contribute predictive value.
+
+```{r}
+
+
+### Load needed libraries
+
+library(tidyverse) 
+library(caret)
+library(lsr)
+library(olsrr)
+library(psych)
+library(lm.beta)
+
+
+### Load the Data
+brf <- read_csv("brfss2021.csv", show_col_types = FALSE)
+
+```
+
+------------------------------------------------------------------------
+
+## Data Preparation
+
+------------------------------------------------------------------------
+
+```{r}
+
+
+
+column_names <- colnames(brf)
+
+#Creating new dataframe with chosen variables
+brf_variables <- brf |> 
+  select(SEXVAR, MENTHLTH, ALCDAY5, INCOME3) |> 
+#Filtering out NAs and no responses or don't know/unsure responses from our variables
+  filter(MENTHLTH != 77 & MENTHLTH != 99 & !is.na(MENTHLTH)) |>
+  filter(ALCDAY5 != 777 & ALCDAY5 != 999 & !is.na(ALCDAY5)) |>
+  filter(INCOME3 != 77 & INCOME3 != 99 & !is.na(INCOME3)) |>
+#Creating additional columns to interpret the values for each variable so that they will work in our analysis. 
+  mutate(Sex = case_when(SEXVAR == 1 ~ 'Male',
+                          SEXVAR == 2 ~'Female')) |> 
+  mutate(Mental_Health_Days = case_when(MENTHLTH == 88 ~ 0,
+                                        MENTHLTH > 0 & MENTHLTH <= 30 ~ MENTHLTH)) |>
+  mutate(Alch_Days__Month = case_when(ALCDAY5 >= 101 & ALCDAY5 <= 107 ~ round((ALCDAY5 - 100) * 4.29),
+                                    ALCDAY5 >= 201 & ALCDAY5 <= 230 ~ ALCDAY5 - 200,
+                                    ALCDAY5 == 888 ~ 0)) |>
+#Reordering our dataframe to group original variables next to the new columns
+  select(SEXVAR, Sex, MENTHLTH, Mental_Health_Days, ALCDAY5, Alch_Days__Month, INCOME3) 
+  
+
+
+
+
+
+
+```
+
+### Discussion:
+
+I selected the variables SEXVAR, MENTHLTH, ALCDAY5 and INCOME3 for this analysis. I carefully considered all options and selected these variables because I felt it made sense to examine these variables together and they could yield interesting insight. My response variable, the variable I will be predicting using regression analysis is MENTHLTH. This variable is the number of days that the respondent experienced poor mental health in the last 30 days. The values of these variables were 1-30, 88, 77, 99 and NA. 77 and 99 represented those who responded "don't know/Not sure" or refused to response. They represented less than 2% of respondents. There were only 2 NAs in the dataset. 77, 99 and NAs were removed due to the infrequency of the responses, and because in further analysis, we will want to predict a value in between 0 (no bad mental health days) and 30 (poor mental health every day of the month) in our regression models. A value of 88 was converted to a 0 so that the variable could be measured in terms of 0-30 days in the final regression analysis.
+
+SEXVAR was chosen in order to test whether there were any differences in how alcohol consumption or income impacted the mental health of males and females differently. Additionally, I wanted to include a binary variable to allow for a wider range of regression models later in the analysis. The dataset was updated to indicate that a value of 1 represents males while a value of 2 represents females.
+
+INCOME3 is a variable that measures household income. The values in this variable range from 1-11, 77, 99 and NAs. 1-11 represents escalating buckets of income ranges, with the highest value representing the highest income group of \$200,000+ annual income. 77 and 99 represent responses of don't know/not sure and refused, representing just under 20% of respondents. Those, alone with NAs were removed. This variable was not converted to another column, as the only remaining values in the variable that we will use in our regression model is 1-11, which we can glean useful information from. If higher income is associated with fewer bad mental health days, then this variable should have a negative relationship with the MENTHLTH variable (or vice versa if the opposite is true).
+
+Finally, the ALCDAY5 variable represents the number of days over the last 30 days that the respondent had at least 1 drink. The values for this variable included 101-107 and 201-230, which represent number of days a week and number of days during the month subsequently. This variable was converted to another variable that calculates the number of days for the full month in order to standardize between the two possible measures.
+
+## Cleaning the Data
+
+```{r}
+### Creating visualizations to determine outliers #
+
+# Boxplot for Mental_Health_Days
+ggplot(brf_variables, aes(x = "", y = Mental_Health_Days)) +  
+  geom_boxplot()
+
+# Boxplot for Alch_Days__Month
+ggplot(brf_variables, aes(x = "", y = Alch_Days__Month)) +  
+  geom_boxplot()
+
+# Boxplot for INCOME3
+ggplot(brf_variables, aes(x = "", y = INCOME3)) +  
+  geom_boxplot()
+
+# Histogram for Mental_Health_Days
+ggplot(brf_variables, aes(x = Mental_Health_Days)) +  
+  geom_histogram()
+
+# Histogram for Alch_Days__Month
+ggplot(brf_variables, aes(x = Alch_Days__Month)) +  
+   geom_histogram()
+
+# Histogram for INCOME3
+ggplot(brf_variables, aes(x = INCOME3)) +  
+  geom_histogram()
+
+ 
+```
+
+### Discussion:
+
+After examining each variable, it was determined that no outliers should be removed for any of the variables. Mental_Health_Days, Alch_Days\_\_Month are continuous variables, but each of them (after cleaning) only include values in between 0-30. It is important to include all values within our analysis, because we want to examine the relationship for between the variables for the full range, including 0 days and 30 days. INCOME3 is an ordinal variable, and after data cleaning has been completed, will include values in between 1 and 11. It is also important to include each bin in the analysis, as we do want to examine both the lowest income and highest income level, and how it interact with alcohol use to impact mental health. Had INCOME3 been a continuous variable with exact income levels, it may have been appropriate to remove outliers in that case. However, with only 11 income buckets, we do not want to remove any of them, as each one includes a substantial enough portion of our respondents.
+
+### Exploring the Data
+
+```{r}
+# Bar chart for Sex
+ggplot(brf_variables, aes(x = Sex)) +  
+  geom_bar()
+
+# Bar chart for Mental_Health_Days
+ggplot(brf_variables, aes(x = Mental_Health_Days)) +  
+  geom_bar()
+
+# Bar chart for Alch_Days__Month
+ggplot(brf_variables, aes(x = Alch_Days__Month)) +  
+   geom_bar()
+
+# Bar chart for INCOME3
+ggplot(brf_variables, aes(x = INCOME3)) +  
+  geom_bar()
+
+
+# Scatter plot for relationship between Mental Health Days and Alcohol consumption
+ggplot(brf_variables, aes(x = Alch_Days__Month, y = Mental_Health_Days)) +  
+  geom_point() +
+  geom_smooth(method = "lm", se = TRUE, color = "red") +
+  labs(title = "All Respondents")
+
+# Scatter plot for relationship between Mental Health Days and household income
+ggplot(brf_variables, aes(x = INCOME3, y = Mental_Health_Days)) +  
+  geom_point() +
+  geom_smooth(method = "lm", se = TRUE, color = "red") +
+  labs(title = "All Respondents")
+
+#Bar chart for relationship between average number of bad mental health days and household income
+ggplot(brf_variables, aes(x = INCOME3, y = Mental_Health_Days)) +  
+  stat_summary(fun = "mean", geom = "bar") +
+  geom_smooth(method = "lm", se = TRUE, color = "black") +
+  labs(title = "All Respondents")
+  
+  
+#Bar chart for relationship between average number of bad mental health days and number of days alcohol is consumed
+ggplot(brf_variables, aes(x = Alch_Days__Month, y = Mental_Health_Days)) +  
+  stat_summary(fun = "mean", geom = "bar") +
+  geom_smooth(method = "lm", se = TRUE, color = "black") +
+  labs(title = "All Respondents")
+
+
+#Creating additional dataframes by limiting one variable or another to explore any differences in relationships
+
+
+#Creating a dataframe of respondents who's annual household income is higher than $100,000.00
+brf_high_income <- brf_variables |>
+  filter(INCOME3 >= 9)
+
+#Creating a dataframe of respondents who's annual household income is less than   $35,000.00
+brf_low_income <- brf_variables |>
+  filter(INCOME3 <= 5)
+
+#Creating a data frame with only respondents with 0 days drinking 
+brf_no_alcohol <- brf_variables |>
+  filter(Alch_Days__Month == 0)
+
+#Creating a data frame with only respondents who drank 15+ days
+brf_heavy_alcohol <- brf_variables |>
+  filter(Alch_Days__Month >= 15)
+
+#Creating a dataframe with only males
+brf_males <- brf_variables |>
+  filter(Sex == 'Male')
+
+#Creating a datamframe with only females
+brf_females <- brf_variables |>
+  filter(Sex == 'Female')
+
+#Creating a dataframe filtering out people who said they had no bad mental health days
+brf_mnthlth_days <- brf_variables |>
+  filter(Mental_Health_Days != 0)
+
+#Creating a dataframe filtering out people who said they didn't drink in the last 30 days
+brf_alcohol <- brf_variables |>
+  filter(Alch_Days__Month != 0)
+
+#Bar chart for relationship between average number of bad mental health days and household income, males
+ggplot(brf_males, aes(x = INCOME3, y = Mental_Health_Days)) +  
+  stat_summary(fun = "mean", geom = "bar") +
+  geom_smooth(method = "lm", se = TRUE, color = "black") +
+  labs(title = "Male Respondents")
+
+#Bar chart for relationship between average number of bad mental health days and household income, females
+ggplot(brf_females, aes(x = INCOME3, y = Mental_Health_Days)) +  
+  stat_summary(fun = "mean", geom = "bar") +
+  geom_smooth(method = "lm", se = TRUE, color = "black") +
+  labs(title = "Female Respondents")
+
+#Bar chart for relationship between average number of bad mental health days and number of days alcohol is consumed, males
+ggplot(brf_males, aes(x = Alch_Days__Month, y = Mental_Health_Days)) +  
+  stat_summary(fun = "mean", geom = "bar") +
+  geom_smooth(method = "lm", se = TRUE, color = "black") +
+  labs(title = "Male Respondents")
+
+#Bar chart for relationship between average number of bad mental health days and number of days alcohol is consumed, females
+ggplot(brf_females, aes(x = Alch_Days__Month, y = Mental_Health_Days)) +  
+  stat_summary(fun = "mean", geom = "bar") +
+  geom_smooth(method = "lm", se = TRUE, color = "black") +
+   labs(title = "Female Respondents")
+
+
+#Bar chart for relationship between average number of bad mental health days and number of days alcohol is consumed for low income respondents
+ggplot(brf_low_income, aes(x = Alch_Days__Month, y = Mental_Health_Days)) +  
+  stat_summary(fun = "mean", geom = "bar") +
+  geom_smooth(method = "lm", se = TRUE, color = "black") +
+  labs(title = "Low income respondents")
+
+#Bar chart for relationship between average number of bad mental health days and number of days alcohol is consumed for high income respondents
+ggplot(brf_high_income, aes(x = Alch_Days__Month, y = Mental_Health_Days)) +  
+  stat_summary(fun = "mean", geom = "bar") +
+  geom_smooth(method = "lm", se = TRUE, color = "black") +
+  labs(title = "High income respondents")
+
+  
+#Bar chart for relationship between average number of bad mental health days and household income for high alcohol consumers (15 days per month or higher)
+ggplot(brf_heavy_alcohol, aes(x = INCOME3, y = Mental_Health_Days)) +  
+  stat_summary(fun = "mean", geom = "bar") +
+  geom_smooth(method = "lm", se = TRUE, color = "black") +
+  labs(title = "Heavier alcohol consumers")
+  
+#Bar chart for relationship between average number of bad mental health days and household income for non-alcohol consumers (0 days in the last month)
+ggplot(brf_no_alcohol, aes(x = INCOME3, y = Mental_Health_Days)) +  
+  stat_summary(fun = "mean", geom = "bar") +
+  geom_smooth(method = "lm", se = TRUE, color = "black") +
+  labs(title = "No alcohol consumers")
+
+#Bar chart for relationship between average number of bad mental health days and household income, only those who drink
+ggplot(brf_alcohol, aes(x = INCOME3, y = Mental_Health_Days)) +  
+  stat_summary(fun = "mean", geom = "bar") +
+  geom_smooth(method = "lm", se = TRUE, color = "black") +
+  labs(title = "All drinkers (at least one drink in the last month)")
+
+#Bar chart for relationship between Mental Health Days and Alcohol consumption, only those who reported at least one bad mental health day
+ggplot(brf_mnthlth_days, aes(x = Alch_Days__Month, y = Mental_Health_Days)) +  
+  stat_summary(fun = "mean", geom = "bar") +
+  geom_smooth(method = "lm", se = TRUE, color = "black") +
+  labs(title = "Respondents who reported some bad mental health")
+
+#Bar chart for relationship between average number of bad mental health days and number of days of alcohol consumption, only those who drink
+ggplot(brf_alcohol, aes(x = Alch_Days__Month, y = Mental_Health_Days)) +  
+  stat_summary(fun = "mean", geom = "bar") +
+  geom_smooth(method = "lm", se = TRUE, color = "black") +
+  labs(title = "All drinkers (at least one drink in the last month)")
+```
+
+### Discussion:
+
+In order to determine if any relationships do exist between the chosen response variable and the three explanatory variables, a series of graphical displays were generated. Firstly, a univariate bar chart was produced for each one of the variables. Our first chart shows the count of female vs male respondents in our analysis, and that there are slightly more female respondents than male respondents. A bar chart which shows the count of respondents broken down by the number of bad mental health days shows that nearly two thirds of our respondents, about 200,000, reported no bad mental health days. The remaining distribution is spread fairly evenly, with people about as likely to report 1 or 2 bad mental health days as 30 bad mental health days. Likewise, about half of respondents reported zero days of alcohol consumption within the last 30 days, with the remainder more likely to report in between 1-5 days of alcohol consumption. As was the case with mental health, there is a noticeable portion of people who reported drinking all 30 days of the month. Finally, our last univariate graph displays the distribution of household income, with the largest number of respondents falling into bin number 7 (which equates to an annual household income of in between \$50,000.00 and \$75,000.00).
+
+For our bivariate visualizations, a series of graphs and charts were created in order to determine the relationship between each of the variables, and mental health. Additionally, multiple new data frames were created to test for any differences between the relationship between our response and explanatory variables among different groups of respondents. First, two scatter plots were created which compared the number of bad mental health days to the number of days alcohol was consumed during the last month and household income subsequently. Lines of best fit were created to further visualize the relationship between the two variables. While it was evident that the number of reported bad mental health days dropped as household income rose, the relationship between days of alcohol consumed per month and mental health was much less clear. A slightly downward trend was somewhat visible, however the slope was so small that it appears that the relationship between the two was probably insignificant. Furthermore, the very small negative relationship that was evident unexpectedly indicated that the number of bad mental health days dropped a little bit as days of alcohol consumption rose.
+
+Because the scatterplot visualization was not particularly helpful (due to the high number of respondents and overlapping points, without the line of best fit any relationship at all was completely hidden), further bar charts were created to illustrate the average number of bad mental health days reported for each bin of alcohol days per month and household income. Once again, a strong correlation between household income and better mental health was apparent, while less so for the number of days alcohol was consumed and bad mental health days. To delve further into these variables, a series of data frames were then created to examine specific groups of respondents. These data frames are as follows:
+
+-   Respondents with a household income of over \$100,000.00
+
+-   Respondents with a household income of less than \$35,000.00
+
+-   Respondents who reported 0 days of drinking in the last month
+
+-   Respondents who reported at least 15 days of drinking over the last month
+
+-   Male respondents only
+
+-   Female respondents only
+
+-   Only respondents who had at least one bad mental health day in the last month
+
+-   Only respondents who drank at least once in the last month
+
+The same bar chart visualization comparing the response and explanatory variables were created for male and female respondents respectively. A strong negative relationship was apparent between household income and bad mental health days for both male and female respondents. Interestingly, while a very slightly negative relationship between bad mental health days and days alcohol was consumed was evident among male respondents, a very slightly positive relationship was revealed for female respondents (meaning that females were slightly more likely to report worsening mental health with a higher number of days of alcohol consumption than males). Two bar charts were then created to examine the relationship between alcohol days per month and bad mental health days for low income and high-income respondents respectively. For low-income respondents, a more defined positive relationship between bad mental health days and days of drinking was revealed, while for high income respondents, no apparently significant relationship was observed.
+
+Charts were then created to examine how income is related to bad mental health days among respondents who drank no alcohol in the last 30 days, as well as those who drank at least 15 days per month. While very similar, it appeared that a higher household income reduced the number of bad mental health days slightly more for heavy alcohol consumers than non-alcohol consumers. Finally, bar charts with a much more limited group of respondents, first removing those who reported 0 bad mental health days and examining the relationship between alcohol consumption and number of bad mental health days, followed by the same chart, but removing those who consumed no alcohol during the month. No significant difference was observed between those groups of individuals and the wider sets which included all respondents.
+
+In summary, while income clearly plays a major role in the reported number of bad mental health days for all groups of people, the relationship between days of alcohol consumption and days of bad mental health is much less significant among all respondents and among every group of respondents examined. One potential exception to that, which warrants further analysis is among the group of low-income respondents, where the relationship between number of days per month where alcohol was consumed, and bad mental health days is potentially significant (unlike with the group of wider respondents that included all household income levels). This relationship will be further examined below to determine whether this relationship is statistically significant, allowing us to conclude that days of alcohol consumption impact mental health differently for low-income respondents than higher income respondents.
+
+### Descriptive Statistics
+
+```{r}
+# Summary stats of income level grouped by days of bad mental health
+menthlth_stats <- brf_variables |>
+  group_by(Mental_Health_Days) |>
+  summarise(
+    Mean = round(mean(INCOME3, na.rm = TRUE), 2),
+    Median = round(median(INCOME3, na.rm = TRUE), 2),
+    SD = round(sd(INCOME3,  na.rm = TRUE), 2),
+    Count = n() )
+
+# Summary stats of mental health grouped by income level bins
+menthlth_stats_income <- brf_variables |>
+  group_by(INCOME3) |>
+  summarise(
+    Mean = round(mean(Mental_Health_Days, na.rm = TRUE), 2),
+    Median = round(median(Mental_Health_Days, na.rm = TRUE), 2),
+    SD = round(sd(Mental_Health_Days,  na.rm = TRUE), 2),
+    Count = n() )
+
+
+# Summary stats of mental health grouped by number of days of alcohol consumption
+menthlth_stats_alch <- brf_variables |>
+  group_by(Alch_Days__Month) |>
+  summarise(
+    Mean = round(mean(Mental_Health_Days, na.rm = TRUE), 2),
+    Median = round(median(Mental_Health_Days, na.rm = TRUE), 2),
+    SD = round(sd(Mental_Health_Days,  na.rm = TRUE), 2),
+    Count = n() )
+
+# Summary stats of mental health grouped split by sex
+menthlth_stats_sex <- brf_variables |>
+  group_by(Sex) |>
+  summarise(
+    Mean = round(mean(Mental_Health_Days, na.rm = TRUE), 2),
+    Median = round(median(Mental_Health_Days, na.rm = TRUE), 2),
+    SD = round(sd(Mental_Health_Days,  na.rm = TRUE), 2),
+    Count = n() )
+
+
+
+menthlth_stats_sex
+menthlth_stats_alch
+menthlth_stats_income
+menthlth_stats
+```
+
+### Discussion:
+
+Summary statistics were created for all four variables. The mean, median, SD and count of each variable was found and grouped by an additional variable. Income level summary stats were grouped by bad mental health days and vice versa. Summary stats of bad mental health days were also grouped by the number of days of alcohol consumption per month. Finally, summary stats of bad mental health days was grouped by sex. One interesting conclusion drawn from the summary statistics is that female respondents had a higher number of reported bad mental health days on average than male respondents, at an average of 4.96 for female respondents and only 3.39 for male respondents. This revelation will be a point of further exploration when regression models are run below.
+
+### Regression Models
+
+```{r}
+
+#Model predicting mental health based on number of days alcohol is consumed per month
+alch_model <- lm(formula = Mental_Health_Days ~ Alch_Days__Month, data = brf_variables)
+
+
+#Model predicting mental health based on household income bin
+income_model <- lm(formula = Mental_Health_Days ~ INCOME3, data = brf_variables)
+
+
+#Model predicting mental health based on number of days alcohol is consumed per month for those with a household income under $35,000.00
+alch_model_lowincome <- lm(formula = Mental_Health_Days ~ Alch_Days__Month, data = brf_low_income)
+
+#Model predicting mental health based on all variables
+multi_model <- lm(formula = Mental_Health_Days ~ INCOME3 + Alch_Days__Month + Sex, data = brf_variables)
+
+#Model predicting mental health based on income and number of days alcohol is consumed
+income_alch_model <- lm(formula = Mental_Health_Days ~ INCOME3 + Alch_Days__Month, data = brf_variables)
+
+#Calling a summary of all of our models 
+summary(alch_model)
+summary(income_model)
+summary(alch_model_lowincome)
+summary(multi_model)
+summary(income_alch_model)
+
+#Finding which model between a model containing all variables and a model removing sex as a predictor is a better model
+AIC(multi_model, income_alch_model)
+summary(multi_model)$adj.r.squared
+summary(income_alch_model)$adj.r.squared
+
+
+```
+
+### Discussion:
+
+Observations made through data exploration and summary statistics were used to inform the models created during this final phase of our analysis. Two main discoveries made earlier were used to try to draw conclusions using several regression models. Firstly, the gap between male and female respondents in the reported number of bad mental health days, and second, the apparent difference in how days of alcohol consumption impact the number of bad mental health days depending on household income level.
+
+First, a simple linear regression was run to predict the number of mental health days from household income level and from the number of days of alcohol consumption were separately created to see what the isolated relationship between the variables were. Both were found to be statistically significant relationships, with income being a greater predictor of days of mental health than days of alcohol consumed. The model (alch_model) which included the entire pool of respondents showed a slightly negative relationship between number of days alcohol was consumed and mental health days. Because this result warrants further investigation, another regression was created that included only low-income respondents. The relationship between the two variables among low-income respondents was found in our summary to be positive, with days of alcohol consumption leading to slightly worsening mental health, with the results being statistically significant with a coefficient of \~0.04, a t value of 9.7 and a p value well below 0.05.
+
+Two additional regressions were run to include multiple explanatory variables. One regression was run with all three explanatory variables, and another one with sex removed (including only our alcohol and income variables to predict mental health days with). Interestingly enough, both regressions yielded a positive correlation between number of days of alcohol consumption and number of bad mental health days. While income was still the greater predictor, alcohol consumption had still become a statistically significant positive predictor of worsening mental health (instead of slightly negative when income level was not factored in). This observation may conclude that **alcohol consumption on its own was not accurately predicting worsening mental health without controlling for household income.** It is likely that further analysis would show that this is due to alcohol consumption increasing as household income increases.
+
+Our second interesting conclusion came from comparing the adjusted R squared and AIC of our two models that contained multiple explanatory variables. After testing both, it was found that **the model that included all three explanatory variables was the better model.** This is because sex is a strong predictor of number of bad mental health days. In summary, when controlling for income level, days of alcohol consumption is a predictor of number of bad mental health days with a positive relationship between the two, with sex being a stronger predictor and household income have the **strongest relationship.**
